@@ -18,6 +18,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
 /// Lightweight in-memory store used during development / integration tests.
 /// Production deployments replace this with a real database pool.
 #[derive(Debug, Default)]
@@ -50,6 +53,82 @@ pub fn acquire_db(db: &SharedDb) -> std::sync::RwLockWriteGuard<'_, DbStore> {
 /// Acquire the database read lock, recovering gracefully from lock poison.
 pub fn read_db(db: &SharedDb) -> std::sync::RwLockReadGuard<'_, DbStore> {
     db.read().unwrap_or_else(|e| e.into_inner())
+}
+
+// ---------------------------------------------------------------------------
+// Bounty listing (backs `GET /api/v1/bounties` and the assignee variant)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Bounty {
+    pub id: String,
+    pub creator: String,
+    pub assignee: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BountyPage {
+    pub bounties: Vec<Bounty>,
+    pub next_cursor: Option<DateTime<Utc>>,
+}
+
+/// Shared paging logic: filter the in-memory store's JSON-encoded records by
+/// `matches`, newest-first, applying the same cursor/limit contract used
+/// elsewhere in the API (`created_at < cursor`, page size `limit`).
+fn list_bounties_where(
+    db: &SharedDb,
+    limit: i64,
+    cursor: Option<DateTime<Utc>>,
+    matches: impl Fn(&Bounty) -> bool,
+) -> anyhow::Result<BountyPage> {
+    let guard = read_db(db);
+    let mut bounties: Vec<Bounty> = guard
+        .records
+        .values()
+        .filter_map(|raw| serde_json::from_str::<Bounty>(raw).ok())
+        .filter(|b| matches(b))
+        .filter(|b| cursor.is_none_or(|c| b.created_at < c))
+        .collect();
+    bounties.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+    let next_cursor = if bounties.len() > limit as usize {
+        bounties.truncate(limit as usize);
+        bounties.last().map(|b| b.created_at)
+    } else {
+        None
+    };
+
+    Ok(BountyPage {
+        bounties,
+        next_cursor,
+    })
+}
+
+/// List bounties created by `creator`, newest first. Backs
+/// `GET /api/v1/bounties`.
+pub async fn list_bounties_by_creator(
+    db: &SharedDb,
+    creator: &str,
+    limit: i64,
+    cursor: Option<DateTime<Utc>>,
+) -> anyhow::Result<BountyPage> {
+    list_bounties_where(db, limit, cursor, |b| {
+        creator.is_empty() || b.creator == creator
+    })
+}
+
+/// List bounties where `assignee` appears as the bounty's assignee, newest
+/// first. Backs `GET /api/v1/bounties/assignee/{address}`.
+pub async fn list_bounties_by_assignee(
+    db: &SharedDb,
+    assignee: &str,
+    limit: i64,
+    cursor: Option<DateTime<Utc>>,
+) -> anyhow::Result<BountyPage> {
+    list_bounties_where(db, limit, cursor, |b| {
+        b.assignee.as_deref() == Some(assignee)
+    })
 }
 
 #[cfg(test)]

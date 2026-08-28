@@ -172,7 +172,7 @@ pub fn poll_once(state: &mut IndexerState, events: &[RawEvent], page_complete: b
         // were silently skipped.  A future contract upgrade emitting a new
         // event kind would be invisible in production logs.  The warn! here
         // makes that immediately observable.
-        if extract_bounty_id_hex(&[event_name.clone()], &event.value_hex).is_none() {
+        if extract_bounty_id_hex(std::slice::from_ref(&event_name), &event.value_hex).is_none() {
             warn!("unrecognized contract event: {event_name}");
             // Still track the ledger so unrecognised events don't stall progress.
         }

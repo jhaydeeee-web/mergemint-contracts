@@ -26,10 +26,12 @@
 // includes the correlation ID, making it trivial to grep logs for a single
 // user's flow even when requests are interleaved.
 
-use std::sync::Arc;
 use std::time::Duration;
 
-use axum::{routing::post, Router};
+use axum::{
+    routing::{get, post},
+    Router,
+};
 use tower_http::{
     limit::RequestBodyLimitLayer,
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
@@ -43,6 +45,7 @@ mod db;
 mod routes;
 
 use db::new_shared_db;
+use routes::bounties::{bounty_stream, claim_bounty, list_bounties, list_bounties_by_assignee};
 use routes::tx::{resolve_dispute, self_claim, AppState};
 
 /// Maximum allowed request body size (1 MiB).
@@ -84,11 +87,27 @@ async fn main() {
     warn_if_reward_token_allowlist_empty();
 
     let shared_db = new_shared_db();
-    let state = Arc::new(AppState { db: shared_db });
+    let (bounty_broadcast, _) = tokio::sync::broadcast::channel(100);
+    let state = AppState {
+        db: shared_db,
+        bounty_broadcast,
+    };
 
     let app = Router::new()
         .route("/tx/resolve-dispute", post(resolve_dispute))
         .route("/tx/self-claim", post(self_claim))
+        // ── Bounty routes (#481, #482) ───────────────────────────────────────
+        .nest(
+            "/api/v1",
+            Router::new()
+                .route("/bounties", get(list_bounties))
+                .route(
+                    "/bounties/assignee/:address",
+                    get(list_bounties_by_assignee),
+                )
+                .route("/bounties/:id/claim", post(claim_bounty))
+                .route("/bounties/stream", get(bounty_stream)),
+        )
         .with_state(state)
         // ── Correlation-ID middleware stack (#486) ──────────────────────────
         //

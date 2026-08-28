@@ -9,7 +9,6 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 use crate::db::{read_db, SharedDb};
 
@@ -17,8 +16,14 @@ use crate::db::{read_db, SharedDb};
 // Shared application state
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 pub struct AppState {
     pub db: SharedDb,
+    /// Fan-out channel for bounty state-change notifications, consumed by the
+    /// `GET /api/v1/bounties/stream` SSE handler (see `routes::bounties`).
+    /// Each SSE connection calls `.subscribe()` for its own receiver, so a
+    /// client that reconnects after a drop simply gets a fresh subscription.
+    pub bounty_broadcast: tokio::sync::broadcast::Sender<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -147,7 +152,7 @@ pub struct SelfClaimRequest {
 /// requests where `arbitrator != bounty.creator` *before* building XDR so we
 /// never waste Horizon round-trips on unauthorised calls.
 pub async fn resolve_dispute(
-    State(state): State<Arc<AppState>>,
+    State(state): State<AppState>,
     Json(req): Json<ResolveDisputeRequest>,
 ) -> Result<Json<ResolveDisputeResponse>, (StatusCode, Json<AppError>)> {
     let bounty = {
@@ -204,7 +209,7 @@ fn build_payout_xdr(bounty: &Bounty, winner: &str) -> String {
 /// on-chain; this server-side check is an optimistic guard only — the contract
 /// enforces the same rule authoritatively.
 pub async fn self_claim(
-    State(state): State<Arc<AppState>>,
+    State(state): State<AppState>,
     Json(req): Json<SelfClaimRequest>,
 ) -> Result<Json<ResolveDisputeResponse>, (StatusCode, Json<AppError>)> {
     let bounty = {

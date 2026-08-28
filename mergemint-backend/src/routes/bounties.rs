@@ -8,7 +8,6 @@
 /// POST /api/v1/bounties/{id}/claim              claim a bounty
 /// GET  /api/v1/bounties/assignee/{address}      list bounties by assignee (#481)
 /// GET  /api/v1/bounties/stream                  SSE stream of state changes (#482)
-
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -23,8 +22,8 @@ use std::convert::Infallible;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt as _;
 
+use crate::db::BountyPage;
 use crate::AppState;
-use crate::db::{Bounty, BountyPage};
 
 // ── Query params ──────────────────────────────────────────────────────────────
 
@@ -42,9 +41,7 @@ pub async fn list_bounties(
     Query(params): Query<ListParams>,
 ) -> Result<Json<BountyPage>, (StatusCode, Json<serde_json::Value>)> {
     let limit = params.limit.unwrap_or(20).min(100);
-    state
-        .db
-        .list_bounties_by_creator("", limit, params.cursor)
+    crate::db::list_bounties_by_creator(&state.db, "", limit, params.cursor)
         .await
         .map(Json)
         .map_err(|e| {
@@ -79,9 +76,7 @@ pub async fn list_bounties_by_assignee(
     }
 
     let limit = params.limit.unwrap_or(20).min(100);
-    state
-        .db
-        .list_bounties_by_assignee(&address, limit, params.cursor)
+    crate::db::list_bounties_by_assignee(&state.db, &address, limit, params.cursor)
         .await
         .map(Json)
         .map_err(|e| {
@@ -108,14 +103,13 @@ pub async fn bounty_stream(
     State(state): State<AppState>,
 ) -> Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>> {
     let rx = state.bounty_broadcast.subscribe();
-    let stream = BroadcastStream::new(rx)
-        .filter_map(|result| {
-            result.ok().map(|bounty_id| {
-                Ok(Event::default()
-                    .event("bounty_updated")
-                    .data(format!(r#"{{"bountyId":"{}"}}"#, bounty_id)))
-            })
-        });
+    let stream = BroadcastStream::new(rx).filter_map(|result| {
+        result.ok().map(|bounty_id| {
+            Ok(Event::default()
+                .event("bounty_updated")
+                .data(format!(r#"{{"bountyId":"{}"}}"#, bounty_id)))
+        })
+    });
 
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
