@@ -668,6 +668,8 @@ impl MergeMintContract {
             fail(ContractError::NotArbitrator);
         }
 
+        symbols::validate_symbol_or_fail(&env, SymbolKind::Resolution, &resolution);
+
         // GUARD: arbitrator (creator) must meet the bounty's own min_reputation threshold.
         // This reflects the security/minimum-reputation-enforcement.md recommendation
         // that dispute resolvers are subject to a reputation floor.
@@ -678,7 +680,6 @@ impl MergeMintContract {
         }
 
         let resolve_complete = Symbol::new(&env, "complete");
-        let resolve_cancel = Symbol::new(&env, "cancel");
 
         if resolution == resolve_complete {
             if bounty.assignees.is_empty() {
@@ -717,7 +718,9 @@ impl MergeMintContract {
                 storage::store_bounty(&env, &bounty_id, &bounty);
                 storage::move_bounty_status(&env, &bounty_id, &previous_status, &bounty.status);
             }
-        } else if resolution == resolve_cancel {
+        } else {
+            // validate_symbol above already guarantees resolution is "complete" or
+            // "cancel" — this branch handles "cancel".
             // Refund escrowed reward to creator before mutating status.
             let token = TokenClient::new(&env, &bounty.reward_token);
             token.transfer(
@@ -730,8 +733,6 @@ impl MergeMintContract {
             bounty.status = Symbol::new(&env, STATUS_CANCELLED);
             storage::store_bounty(&env, &bounty_id, &bounty);
             storage::move_bounty_status(&env, &bounty_id, &previous_status, &bounty.status);
-        } else {
-            panic!("resolution must be 'complete' or 'cancel'");
         }
 
         events::emit_dispute_resolved(&env, &bounty_id, &arbitrator, &resolution);

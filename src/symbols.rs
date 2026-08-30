@@ -22,10 +22,14 @@ const ALLOWED_TAGS: &[&str] = &[
     "bug", "docs", "feature", "security", "test", "refactor", "design", "chore", "perf", "other",
 ];
 
+/// Resolution values accepted by `resolve_dispute`.
+const ALLOWED_RESOLUTIONS: &[&str] = &["complete", "cancel"];
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum SymbolKind {
     Status,
     Tag,
+    Resolution,
 }
 
 fn symbol_is(env: &Env, value: &Symbol, expected: &str) -> bool {
@@ -37,6 +41,7 @@ pub fn validate_symbol(env: &Env, kind: SymbolKind, value: &Symbol) -> Result<()
     let allowed = match kind {
         SymbolKind::Status => ALLOWED_STATUSES,
         SymbolKind::Tag => ALLOWED_TAGS,
+        SymbolKind::Resolution => ALLOWED_RESOLUTIONS,
     };
     if allowed
         .iter()
@@ -47,6 +52,7 @@ pub fn validate_symbol(env: &Env, kind: SymbolKind, value: &Symbol) -> Result<()
         Err(match kind {
             SymbolKind::Status => ContractError::InvalidStatus,
             SymbolKind::Tag => ContractError::InvalidTag,
+            SymbolKind::Resolution => ContractError::InvalidResolution,
         })
     }
 }

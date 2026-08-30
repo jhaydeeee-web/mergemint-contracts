@@ -3258,3 +3258,90 @@ fn test_resolve_dispute_accepts_sufficient_reputation_arbitrator() {
     let bounty = client.get_bounty(&bounty_id).unwrap();
     assert_eq!(bounty.status, Symbol::new(&env, "cancelled"));
 }
+
+// ===========================================================================
+// #651 — resolve_dispute resolution allow-list
+// ===========================================================================
+
+/// resolve_dispute must reject a resolution Symbol outside {"complete", "cancel"}.
+#[test]
+#[should_panic(expected = "resolution must be 'complete' or 'cancel'")]
+fn test_resolve_dispute_rejects_unknown_resolution_symbol() {
+    let (env, creator, contributor, _verifier) = setup_test();
+    let contract_id = env.register(MergeMintContract, ());
+    let client = MergeMintContractClient::new(&env, &contract_id);
+
+    let (bounty_id, _token_addr) = make_bounty_with_token(
+        &client,
+        &env,
+        &creator,
+        &contract_id,
+        "bad_resolution",
+        1000,
+        None,
+    );
+    client.claim_bounty(&contributor, &bounty_id);
+    client.raise_dispute(&creator, &bounty_id);
+
+    client.resolve_dispute(&creator, &bounty_id, &Symbol::new(&env, "nonsense"));
+}
+
+// ===========================================================================
+// #654 — Contributor entry TTL survives periodic bumps
+// ===========================================================================
+
+/// A `Contributor` entry must survive well beyond its original creation-time
+/// TTL window as long as it keeps getting read/written, because every
+/// `storage::get_contributor` / `store_contributor` call extends the TTL.
+#[test]
+fn test_contributor_entry_survives_ttl_via_periodic_bump() {
+    let (env, creator, contributor, _verifier) = setup_test();
+    let contract_id = env.register(MergeMintContract, ());
+    let client = MergeMintContractClient::new(&env, &contract_id);
+
+    let (bounty_id, _token_addr) = make_bounty_with_token(
+        &client,
+        &env,
+        &creator,
+        &contract_id,
+        "ttl_bump",
+        1000,
+        None,
+    );
+    client.claim_bounty(&contributor, &bounty_id);
+
+    let key = crate::types::DataKey::Contributor(contributor.clone());
+
+    let initial_ttl = env.as_contract(&contract_id, || env.storage().persistent().get_ttl(&key));
+    assert!(
+        initial_ttl > 0,
+        "contributor entry must have a positive TTL right after claim_bounty"
+    );
+
+    // Advance close to (but before) the original expiry, then touch the entry.
+    env.ledger().set_sequence_number(6_000_000);
+    let contrib_mid = client.get_contributor(&contributor);
+    assert!(
+        contrib_mid.is_some(),
+        "entry must still be readable while inside its original TTL window"
+    );
+
+    // `storage::extend` re-arms the TTL to a fixed `STORAGE_TTL_LEDGERS` window
+    // once the remaining life drops below half, so after a near-expiry read the
+    // remaining TTL is back near its full value (well above what a decaying,
+    // un-bumped entry would show this deep into the original window).
+    let bumped_ttl = env.as_contract(&contract_id, || env.storage().persistent().get_ttl(&key));
+    assert!(
+        bumped_ttl > 3_000_000,
+        "reading the entry near expiry must re-arm its TTL rather than leave it decaying"
+    );
+
+    // Advance well past where the original TTL window would have expired the entry.
+    env.ledger().set_sequence_number(11_500_000);
+    let contrib_late = client.get_contributor(&contributor);
+    assert!(
+        contrib_late.is_some(),
+        "contributor entry must remain readable past the original TTL window because the \
+         mid-window read bumped its TTL"
+    );
+}

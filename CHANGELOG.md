@@ -11,6 +11,10 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Changes that have landed on `main` but are not yet associated with a tagged release.
 
+### Changed
+
+- `resolve_dispute` now validates its `resolution` argument (`"complete"` / `"cancel"`) through the shared `symbols::validate_symbol` allow-list, panicking with `resolution must be 'complete' or 'cancel'` on an unrecognised value (#651).
+
 ### Added
 
 - `sdk`: optional `retry: { attempts, backoffMs }` constructor option that retries
