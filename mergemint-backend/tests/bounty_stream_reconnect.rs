@@ -16,17 +16,18 @@
 //   * the reconnected client gets a working fresh subscription that
 //     delivers events broadcast after it resubscribes.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::{routing::get, Router};
-use mergemint_backend::db::new_shared_db;
+use mergemint_backend::db::{new_shared_db, new_shared_idempotency_store};
 use mergemint_backend::routes::bounties::bounty_stream;
 use mergemint_backend::AppState;
 use tokio::net::TcpListener;
 
 /// Start a real HTTP server exposing only `bounty_stream`, and return its
 /// base URL. The server runs for the lifetime of the test process.
-async fn spawn_test_server(state: AppState) -> String {
+async fn spawn_test_server(state: Arc<AppState>) -> String {
     let app = Router::new()
         .route("/stream", get(bounty_stream))
         .with_state(state);
@@ -76,10 +77,11 @@ async fn collect_events(mut response: reqwest::Response, count: usize) -> Vec<St
 
 #[tokio::test]
 async fn reconnect_after_drop_delivers_no_duplicate_events() {
-    let state = AppState {
+    let state = Arc::new(AppState {
         db: new_shared_db(),
+        idempotency: new_shared_idempotency_store(),
         bounty_broadcast: tokio::sync::broadcast::channel(16).0,
-    };
+    });
     let url = spawn_test_server(state.clone()).await;
     let client = reqwest::Client::new();
 
