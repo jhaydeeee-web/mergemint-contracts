@@ -224,13 +224,13 @@ export class MergeMintSDK {
    */
   constructor(config: NetworkConfig) {
     if (!config.contractId || typeof config.contractId !== "string" || config.contractId.trim() === "") {
-      throw new Error("Invalid contractId: contractId must be a non-empty string.");
+      throw new MergeMintSdkError("Invalid contractId: contractId must be a non-empty string.", "INVALID_CONTRACT_ID");
     }
     if (config.contractId.includes("...") || config.contractId.startsWith("0x0000000000000000000000000000000000000000000000000000000000000000")) {
-      throw new Error(`Invalid contractId: placeholder or null address detected in configuration: "${config.contractId}".`);
+      throw new MergeMintSdkError(`Invalid contractId: placeholder or null address detected in configuration: "${config.contractId}".`, "INVALID_CONTRACT_ID");
     }
     if (config.rpcUrl.includes("XCa...") || config.rpcUrl.includes("...")) {
-      throw new Error("Invalid RPC URL: placeholder detected in configuration. Please provide a valid Soroban RPC provider URL.");
+      throw new MergeMintSdkError("Invalid RPC URL: placeholder detected in configuration. Please provide a valid Soroban RPC provider URL.", "INVALID_RPC_URL");
     }
     this.rpc = new SorobanRpc.Server(config.rpcUrl);
     this.contract = new Contract(config.contractId.trim());
@@ -523,7 +523,7 @@ export class MergeMintSDK {
 
     const sim = await this.withRetry(() => this.rpc.simulateTransaction(tx));
     if (SorobanRpc.Api.isSimulationError(sim)) {
-      throw new Error(`Simulation failed: ${sim.error}`);
+      throw new MergeMintSdkError(`Simulation failed: ${sim.error}`, "SIMULATION_FAILED");
     }
 
     const prepared = SorobanRpc.assembleTransaction(

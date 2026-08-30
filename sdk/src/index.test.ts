@@ -1,5 +1,6 @@
 import { nativeToScVal } from "@stellar/stellar-sdk";
 import { MergeMintSDK, symbolToScVal, TESTNET } from "./index";
+import { MergeMintSdkError } from "./types";
 
 describe("symbolToScVal", () => {
   it("throws for a 33-character input", () => {
@@ -102,5 +103,31 @@ describe("MergeMintSDK retry", () => {
           retry: { attempts: 2, backoffMs: -1 },
         }),
     ).toThrow(/Invalid retry.backoffMs/);
+  });
+});
+
+describe("MergeMintSDK constructor typed errors", () => {
+  it("throws MergeMintSdkError with INVALID_CONTRACT_ID for an empty contractId", () => {
+    try {
+      new MergeMintSDK({ ...TESTNET, contractId: "" });
+      throw new Error("expected constructor to throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(MergeMintSdkError);
+      expect((err as MergeMintSdkError).code).toBe("INVALID_CONTRACT_ID");
+    }
+  });
+
+  it("throws MergeMintSdkError with INVALID_RPC_URL for a placeholder rpcUrl", () => {
+    try {
+      new MergeMintSDK({
+        rpcUrl: "https://example.com/v1/XCa...",
+        networkPassphrase: TESTNET.networkPassphrase,
+        contractId: "CA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ",
+      });
+      throw new Error("expected constructor to throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(MergeMintSdkError);
+      expect((err as MergeMintSdkError).code).toBe("INVALID_RPC_URL");
+    }
   });
 });
