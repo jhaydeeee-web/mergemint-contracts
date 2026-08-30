@@ -2538,6 +2538,368 @@ fn test_escrow_balance_invariant() {
 }
 
 // ===========================================================================
+// ===========================================================================
+// #639 — duplicate dispute rejection
+// ===========================================================================
+
+/// A second raise_dispute on an already-disputed bounty must fail with
+/// "bounty is disputed".
+#[test]
+#[should_panic(expected = "bounty is disputed")]
+fn test_raise_dispute_twice_rejected() {
+    let (env, creator, contributor, _verifier) = setup_test();
+    let contract_id = env.register(MergeMintContract, ());
+    let client = MergeMintContractClient::new(&env, &contract_id);
+
+    let bounty_id = make_bounty(&client, &env, &creator, "dbl_dispute", None);
+    client.claim_bounty(&contributor, &bounty_id);
+
+    // First dispute — must succeed.
+    client.raise_dispute(&creator, &bounty_id);
+
+    let bounty = client.get_bounty(&bounty_id).unwrap();
+    assert_eq!(bounty.status, Symbol::new(&env, "disputed"));
+
+    // Second dispute on the same bounty — must panic.
+    client.raise_dispute(&contributor, &bounty_id);
+}
+
+/// A second raise_dispute by the original caller also fails.
+#[test]
+#[should_panic(expected = "bounty is disputed")]
+fn test_raise_dispute_twice_same_caller_rejected() {
+    let (env, creator, contributor, _verifier) = setup_test();
+    let contract_id = env.register(MergeMintContract, ());
+    let client = MergeMintContractClient::new(&env, &contract_id);
+
+    let bounty_id = make_bounty(&client, &env, &creator, "dbl_dispute2", None);
+    client.claim_bounty(&contributor, &bounty_id);
+
+    client.raise_dispute(&creator, &bounty_id);
+    // Same caller tries again — must also be rejected.
+    client.raise_dispute(&creator, &bounty_id);
+}
+
+// ===========================================================================
+// #640 — overflow check in create_bounty milestone sum
+// ===========================================================================
+
+/// Milestone rewards that would overflow i128 must panic with
+/// "reward amount arithmetic overflow".
+#[test]
+#[should_panic(expected = "reward amount arithmetic overflow")]
+fn test_create_bounty_milestone_reward_overflow() {
+    let (env, creator, _contributor, _verifier) = setup_test();
+    let contract_id = env.register(MergeMintContract, ());
+    let client = MergeMintContractClient::new(&env, &contract_id);
+
+    let token_addr = create_token_and_mint(&env, &creator, &contract_id, 0);
+
+    // Two milestones whose rewards overflow i128 when summed.
+    let mut milestones: Vec<crate::types::Milestone> = Vec::new(&env);
+    milestones.push_back(crate::types::Milestone {
+        description: Symbol::new(&env, "m1"),
+        reward: i128::MAX,
+        completed: false,
+    });
+    milestones.push_back(crate::types::Milestone {
+        description: Symbol::new(&env, "m2"),
+        reward: 1,
+        completed: false,
+    });
+
+    // reward_amount is irrelevant here — overflow is caught before the
+    // mismatch check.
+    client.create_bounty(
+        &creator,
+        &Symbol::new(&env, "overflow_bounty"),
+        &String::from_str(&env, "desc"),
+        &i128::MAX,
+        &token_addr,
+        &0,
+        &None,
+        &Vec::new(&env),
+        &1,
+        &None,
+        &1,
+        &milestones,
+    );
+}
+
+/// Non-overflowing milestone sums that match reward_amount are accepted.
+#[test]
+fn test_create_bounty_milestone_checked_add_valid() {
+    let (env, creator, _contributor, _verifier) = setup_test();
+    let contract_id = env.register(MergeMintContract, ());
+    let client = MergeMintContractClient::new(&env, &contract_id);
+
+    let token_addr = create_token_and_mint(&env, &creator, &contract_id, 0);
+
+    let mut milestones: Vec<crate::types::Milestone> = Vec::new(&env);
+    milestones.push_back(crate::types::Milestone {
+        description: Symbol::new(&env, "m1"),
+        reward: 400,
+        completed: false,
+    });
+    milestones.push_back(crate::types::Milestone {
+        description: Symbol::new(&env, "m2"),
+        reward: 600,
+        completed: false,
+    });
+
+    // Should succeed: 400 + 600 == 1000 == reward_amount.
+    let bounty_id = client.create_bounty(
+        &creator,
+        &Symbol::new(&env, "ms_ok"),
+        &String::from_str(&env, "desc"),
+        &1000,
+        &token_addr,
+        &0,
+        &None,
+        &Vec::new(&env),
+        &1,
+        &None,
+        &1,
+        &milestones,
+    );
+
+    let bounty = client.get_bounty(&bounty_id).unwrap();
+    assert_eq!(bounty.milestones.len(), 2);
+}
+
+// ===========================================================================
+// #641 — empty metadata rejection in update_contributor_metadata
+// ===========================================================================
+
+/// Passing an empty Symbol to update_contributor_metadata must panic with
+/// "metadata must not be empty".
+#[test]
+#[should_panic(expected = "metadata must not be empty")]
+fn test_update_contributor_metadata_empty_symbol_rejected() {
+    let (env, _creator, contributor, _verifier) = setup_test();
+    let contract_id = env.register(MergeMintContract, ());
+    let client = MergeMintContractClient::new(&env, &contract_id);
+
+    // An empty Symbol — length is 0.
+    client.update_contributor_metadata(&contributor, &Symbol::new(&env, ""));
+}
+
+/// A non-empty Symbol is accepted and stored normally.
+#[test]
+fn test_update_contributor_metadata_non_empty_symbol_accepted() {
+    let (env, _creator, contributor, _verifier) = setup_test();
+    let contract_id = env.register(MergeMintContract, ());
+    let client = MergeMintContractClient::new(&env, &contract_id);
+
+    let uri = Symbol::new(&env, "ipfs_Qm123");
+    client.update_contributor_metadata(&contributor, &uri);
+
+    let data = client.get_contributor(&contributor).unwrap();
+    assert_eq!(data.metadata.unwrap(), uri);
+}
+
+// ===========================================================================
+// #747 — require_auth coverage matrix
+// ===========================================================================
+
+/// Table-driven test: every mutation entrypoint must call require_auth on the
+/// expected party.  The strategy is:
+///   1. Set up env with mock_all_auths() so each call succeeds.
+///   2. After each call, inspect env.auths() and assert that the expected
+///      address appears as the first (outermost) authorised party.
+///
+/// This confirms require_auth is invoked; it does NOT test what happens when
+/// auth is absent (that is guarded by the Soroban host at runtime).
+#[test]
+fn test_require_auth_coverage_matrix() {
+    use soroban_sdk::testutils::AuthorizedInvocation;
+
+    let (env, creator, contributor, verifier) = setup_test();
+    let contract_id = env.register(MergeMintContract, ());
+    let client = MergeMintContractClient::new(&env, &contract_id);
+
+    // -----------------------------------------------------------------------
+    // Helper: assert that `expected` is the top-level authorized address for
+    // the most recent contract invocation.
+    // -----------------------------------------------------------------------
+    let assert_auth = |expected: &Address| {
+        let auths = env.auths();
+        assert!(
+            !auths.is_empty(),
+            "env.auths() was empty — require_auth was not called"
+        );
+        let (addr, _invocation) = auths.first().unwrap();
+        assert_eq!(
+            addr, expected,
+            "require_auth was called for the wrong address"
+        );
+    };
+
+    // --- create_bounty: auth on `creator` ----------------------------------
+    let token_addr = create_token_and_mint(&env, &creator, &contract_id, 10_000);
+    let bounty_id = client.create_bounty(
+        &creator,
+        &Symbol::new(&env, "auth_matrix"),
+        &String::from_str(&env, "desc"),
+        &1000,
+        &token_addr,
+        &0,
+        &None,
+        &Vec::new(&env),
+        &1,
+        &None,
+        &1,
+        &Vec::new(&env),
+    );
+    assert_auth(&creator);
+
+    // --- claim_bounty: auth on `contributor` -------------------------------
+    client.claim_bounty(&contributor, &bounty_id);
+    assert_auth(&contributor);
+
+    // --- complete_bounty: auth on `verifier` --------------------------------
+    // Need a separate bounty in in_progress state; also need tokens minted to
+    // the contract address so the payout can succeed.
+    let token_addr2 = create_token_and_mint(&env, &creator, &contract_id, 1000);
+    let bounty_id2 = client.create_bounty(
+        &creator,
+        &Symbol::new(&env, "auth_matrix2"),
+        &String::from_str(&env, "desc"),
+        &1000,
+        &token_addr2,
+        &0,
+        &None,
+        &Vec::new(&env),
+        &1,
+        &None,
+        &1,
+        &Vec::new(&env),
+    );
+    let contributor2 = Address::generate(&env);
+    client.claim_bounty(&contributor2, &bounty_id2);
+    client.complete_bounty(&verifier, &bounty_id2);
+    assert_auth(&verifier);
+
+    // --- raise_dispute: auth on `caller` (creator) -------------------------
+    // Need an in_progress bounty.
+    let token_addr3 = create_token_and_mint(&env, &creator, &contract_id, 1000);
+    let bounty_id3 = client.create_bounty(
+        &creator,
+        &Symbol::new(&env, "auth_matrix3"),
+        &String::from_str(&env, "desc"),
+        &1000,
+        &token_addr3,
+        &0,
+        &None,
+        &Vec::new(&env),
+        &1,
+        &None,
+        &1,
+        &Vec::new(&env),
+    );
+    let contributor3 = Address::generate(&env);
+    client.claim_bounty(&contributor3, &bounty_id3);
+    client.raise_dispute(&creator, &bounty_id3);
+    assert_auth(&creator);
+
+    // --- resolve_dispute: auth on `arbitrator` (creator) -------------------
+    client.resolve_dispute(&creator, &bounty_id3, &Symbol::new(&env, "cancel"));
+    assert_auth(&creator);
+
+    // --- cancel_bounty: auth on `caller` (creator) -------------------------
+    let token_addr4 = create_token_and_mint(&env, &creator, &contract_id, 1000);
+    let bounty_id4 = client.create_bounty(
+        &creator,
+        &Symbol::new(&env, "auth_matrix4"),
+        &String::from_str(&env, "desc"),
+        &1000,
+        &token_addr4,
+        &0,
+        &None,
+        &Vec::new(&env),
+        &1,
+        &None,
+        &1,
+        &Vec::new(&env),
+    );
+    client.cancel_bounty(&creator, &bounty_id4);
+    assert_auth(&creator);
+
+    // --- expire_bounty: auth on `caller` (any address) ---------------------
+    let token_addr5 = create_token_and_mint(&env, &creator, &contract_id, 1000);
+    let bounty_id5 = client.create_bounty(
+        &creator,
+        &Symbol::new(&env, "auth_matrix5"),
+        &String::from_str(&env, "desc"),
+        &1000,
+        &token_addr5,
+        &0,
+        &Some(10),
+        &Vec::new(&env),
+        &1,
+        &None,
+        &1,
+        &Vec::new(&env),
+    );
+    // Advance ledger past the deadline.
+    env.ledger().set_sequence_number(20);
+    let caller = Address::generate(&env);
+    client.expire_bounty(&caller, &bounty_id5);
+    assert_auth(&caller);
+
+    // --- update_contributor_metadata: auth on `contributor` ----------------
+    client.update_contributor_metadata(&contributor, &Symbol::new(&env, "ipfs_test"));
+    assert_auth(&contributor);
+
+    // --- approve_completion (no required_verifiers → immediate): auth on verifier --
+    let token_addr6 = create_token_and_mint(&env, &creator, &contract_id, 1000);
+    let bounty_id6 = client.create_bounty(
+        &creator,
+        &Symbol::new(&env, "auth_matrix6"),
+        &String::from_str(&env, "desc"),
+        &1000,
+        &token_addr6,
+        &0,
+        &None,
+        &Vec::new(&env),
+        &1,
+        &None,
+        &1,
+        &Vec::new(&env),
+    );
+    let contributor6 = Address::generate(&env);
+    client.claim_bounty(&contributor6, &bounty_id6);
+    client.approve_completion(&verifier, &bounty_id6);
+    assert_auth(&verifier);
+
+    // --- complete_milestone: auth on `verifier` ----------------------------
+    let token_addr7 = create_token_and_mint(&env, &creator, &contract_id, 1000);
+    let mut milestones7: Vec<crate::types::Milestone> = Vec::new(&env);
+    milestones7.push_back(crate::types::Milestone {
+        description: Symbol::new(&env, "ms"),
+        reward: 1000,
+        completed: false,
+    });
+    let bounty_id7 = client.create_bounty(
+        &creator,
+        &Symbol::new(&env, "auth_matrix7"),
+        &String::from_str(&env, "desc"),
+        &1000,
+        &token_addr7,
+        &0,
+        &None,
+        &Vec::new(&env),
+        &1,
+        &None,
+        &1,
+        &milestones7,
+    );
+    let contributor7 = Address::generate(&env);
+    client.claim_bounty(&contributor7, &bounty_id7);
+    client.complete_milestone(&verifier, &bounty_id7, &0);
+    assert_auth(&verifier);
+}
+
 // Issue #650 — `docs/event-schema.md` parity with mutation emissions
 // ===========================================================================
 
