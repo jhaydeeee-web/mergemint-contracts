@@ -94,11 +94,12 @@ fn is_syntactically_valid_address(address: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{acquire_db, new_shared_db, Bounty};
+    use crate::db::{acquire_db, new_shared_db, new_shared_idempotency_store, Bounty};
 
     fn test_state() -> Arc<AppState> {
         Arc::new(AppState {
             db: new_shared_db(),
+            idempotency: new_shared_idempotency_store(),
         })
     }
 
